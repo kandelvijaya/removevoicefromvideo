@@ -37,7 +37,7 @@ final class MediaTests: XCTestCase {
         for ext in ["MP4", "m4v"] {
             let arguments = try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.\(ext)"),
                                                        media: decode(fixture), faststart: true)
-            XCTAssertEqual(arguments, ["-movflags", "+faststart"])
+            XCTAssertEqual(arguments, ["-write_tmcd", "0", "-movflags", "+faststart"])
         }
     }
     func testCustomMetadataWithCoverFailsPreflight() throws {
@@ -54,9 +54,9 @@ final class MediaTests: XCTestCase {
             .replacingOccurrences(of: "\"title\":\"Original title\"", with: "\"project_note\":\"Keep me\""))
         for ext in ["mp4", "mov", "m4v"] {
             XCTAssertEqual(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.\(ext)"), media: media, faststart: false),
-                           ["-movflags", "+use_metadata_tags"])
+                           ["-write_tmcd", "0", "-movflags", "+use_metadata_tags"])
             XCTAssertEqual(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.\(ext)"), media: media, faststart: true),
-                           ["-movflags", "+use_metadata_tags+faststart"])
+                           ["-write_tmcd", "0", "-movflags", "+use_metadata_tags+faststart"])
         }
     }
     func testMOVCoverAndNonMOVFaststartFailPreflight() throws {
@@ -69,6 +69,101 @@ final class MediaTests: XCTestCase {
         XCTAssertNoThrow(try validateCoverFileMetadata(["creation_time": "2026-10-04T09:55:11.000000Z",
                                                        "title": "Keep me", "comment": "Keep me too", "encoder": "Camera"]))
         XCTAssertThrowsError(try validateCoverFileMetadata(["com.apple.quicktime.make": "Camera"]))
+    }
+    let timecodeFixture = """
+    {"streams":[
+      {"index":0,"codec_type":"video","codec_name":"h264","width":128,"height":72,
+       "start_time":"0.000000","duration":"2.000000","disposition":{"default":1},"tags":{"timecode":"01:00:00:00"}},
+      {"index":1,"codec_type":"audio","codec_name":"aac","channels":2,"sample_rate":"48000",
+       "start_time":"0.000000","duration":"2.000000","disposition":{"default":1}},
+      {"index":2,"codec_type":"data","codec_tag_string":"tmcd","time_base":"1/12800","nb_frames":"1",
+       "start_time":"0.000000","duration":"2.000000","disposition":{"default":1},
+       "tags":{"timecode":"01:00:00:00","language":"eng","handler_name":"TimeCodeHandler",
+               "creation_time":"2026-10-07T17:48:35.000000Z"}}
+    ],"chapters":[]}
+    """
+    func testTimecodeWithoutCodecNameIsMappedAndNotRegenerated() throws {
+        let media = try decode(timecodeFixture)
+        XCTAssertNil(media.streams[2].codec_name)
+        XCTAssertTrue(media.streams[2].isTimecode)
+        XCTAssertEqual(media.retained.map(\.index), [0, 1, 2])
+        let args = try remuxArguments(input: URL(fileURLWithPath: "/clip.mov"),
+                                     audio: URL(fileURLWithPath: "/audio.m4a"),
+                                     temporary: URL(fileURLWithPath: "/temp.mov"), media: media, faststart: false)
+        XCTAssertTrue(args.contains("0:2"))
+        XCTAssertTrue(args.contains("-map_metadata:s:2"))
+        XCTAssertTrue(args.contains("-disposition:2"))
+        XCTAssertEqual(args[args.firstIndex(of: "-write_tmcd")! + 1], "0")
+        XCTAssertNoThrow(try validateOutput(source: media, output: media, frameCount: 96000))
+    }
+    func testTimecodeRejectsFormatTimingValueAndMetadataChanges() throws {
+        // Remove the video's tag so each failure exercises the copied data track.
+        let fixture = timecodeFixture.replacingOccurrences(of: "\"tags\":{\"timecode\":\"01:00:00:00\"}", with: "\"tags\":{}")
+        let source = try decode(fixture)
+        let changes = [
+            ("\"tmcd\"", "\"djmd\""),
+            ("\"1/12800\"", "\"1/1000\""),
+            ("\"nb_frames\":\"1\"", "\"nb_frames\":\"2\""),
+            ("01:00:00:00", "02:00:00:00"),
+            ("\"timecode\":\"01:00:00:00\"", "\"other\":\"01:00:00:00\""),
+            ("TimeCodeHandler", "VideoHandler"),
+            ("2026-10-07T17:48:35.000000Z", "2026-10-08T17:48:35.000000Z"),
+            ("\"language\":\"eng\"", "\"language\":\"und\"")
+        ]
+        for (old, new) in changes {
+            let output = try decode(fixture.replacingOccurrences(of: old, with: new))
+            XCTAssertThrowsError(try validateOutput(source: source, output: output, frameCount: 96000), old)
+        }
+        for endpoint in ["start_time", "duration"] {
+            var object = try JSONSerialization.jsonObject(with: Data(fixture.utf8)) as! [String: Any]
+            var streams = object["streams"] as! [[String: Any]]
+            streams[2][endpoint] = endpoint == "start_time" ? "0.002000" : "2.002000"
+            object["streams"] = streams
+            let output = try JSONDecoder().decode(Media.self, from: JSONSerialization.data(withJSONObject: object))
+            XCTAssertThrowsError(try validateOutput(source: source, output: output, frameCount: 96000), endpoint)
+        }
+    }
+    func testMissingDuplicateAndUnknownOutputDataAreRejected() throws {
+        let source = try decode(timecodeFixture)
+        for extra in [
+            "{\"index\":3,\"codec_type\":\"data\",\"codec_tag_string\":\"tmcd\"}",
+            "{\"index\":3,\"codec_type\":\"data\",\"codec_name\":\"djmd\"}",
+            "{\"index\":3,\"codec_type\":\"data\",\"codec_name\":\"bin_data\"}"
+        ] {
+            let output = try decode(timecodeFixture.replacingOccurrences(of: "],\"chapters\":[]", with: ",\(extra)],\"chapters\":[]"))
+            XCTAssertThrowsError(try validateOutput(source: source, output: output, frameCount: 96000))
+        }
+        var object = try JSONSerialization.jsonObject(with: Data(timecodeFixture.utf8)) as! [String: Any]
+        object["streams"] = Array((object["streams"] as! [[String: Any]]).prefix(2))
+        let missing = try JSONDecoder().decode(Media.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertThrowsError(try validateOutput(source: source, output: missing, frameCount: 96000))
+    }
+    func testOnlyDataWithTMCDTagIsRetainedAndUnknownDataStillDrops() throws {
+        let media = try decode(timecodeFixture.replacingOccurrences(of: "],\"chapters\":[]", with:
+            ", {\"index\":3,\"codec_type\":\"data\",\"codec_name\":\"djmd\",\"codec_tag_string\":\"djmd\"}],\"chapters\":[]"))
+        XCTAssertEqual(media.retained.map(\.index), [0, 1, 2])
+        let args = try remuxArguments(input: URL(fileURLWithPath: "/clip.mov"), audio: URL(fileURLWithPath: "/audio.m4a"),
+                                     temporary: URL(fileURLWithPath: "/temp.mov"), media: media, faststart: false)
+        XCTAssertTrue(args.contains("0:2"))
+        XCTAssertFalse(args.contains("0:3"))
+        let impostor = try decode("{\"streams\":[{\"index\":0,\"codec_type\":\"unknown\",\"codec_tag_string\":\"tmcd\"}]}")
+        XCTAssertFalse(impostor.streams[0].isTimecode)
+    }
+    func testTimecodeWithChaptersDoesNotAdmitUnknownOutputData() throws {
+        let fixture = timecodeFixture.replacingOccurrences(of: "\"chapters\":[]", with:
+            "\"chapters\":[{\"start_time\":\"0.000\",\"end_time\":\"1.900\",\"tags\":{\"title\":\"Chapter\"}}]")
+        let source = try decode(fixture)
+        let output = try decode(fixture.replacingOccurrences(of: "],\"chapters\":", with:
+            ", {\"index\":3,\"codec_type\":\"data\",\"codec_tag_string\":\"djmd\"}],\"chapters\":"))
+        XCTAssertThrowsError(try validateOutput(source: source, output: output, frameCount: 96000))
+    }
+    func testUnsupportedOrIncompleteTimecodeFailsPreflight() throws {
+        let media = try decode(timecodeFixture)
+        XCTAssertThrowsError(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.mkv"), media: media, faststart: false))
+        let incomplete = try decode(timecodeFixture.replacingOccurrences(of: "\"nb_frames\":\"1\",", with: ""))
+        XCTAssertThrowsError(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.mov"), media: incomplete, faststart: false))
+        let missingValue = try decode(timecodeFixture.replacingOccurrences(of: "01:00:00:00", with: ""))
+        XCTAssertThrowsError(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.mov"), media: missingValue, faststart: false))
     }
     func testUnsupportedTrackCountsAndChannelsFail() throws {
         XCTAssertThrowsError(try decode("{\"streams\":[]}").validateInput())

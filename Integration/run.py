@@ -95,7 +95,11 @@ class NativeIntegration(unittest.TestCase):
         before, after = probe(source), probe(output)
         for stream in before['streams']:
             if stream['codec_type'] == 'data':
-                self.assertIn(f"DROP unsupported data stream {stream['index']}", result.stderr)
+                if stream.get('codec_tag_string') == 'tmcd':
+                    self.assertIn(f"COPY supported tmcd timecode stream {stream['index']}", result.stderr)
+                    self.assertNotIn(f"DROP unsupported data stream {stream['index']}", result.stderr)
+                else:
+                    self.assertIn(f"DROP unsupported data stream {stream['index']}", result.stderr)
         source_video = [s for s in before['streams'] if s['codec_type'] == 'video']
         result_video = [s for s in after['streams'] if s['codec_type'] == 'video']
         self.assertEqual(len(source_video), len(result_video))
@@ -140,6 +144,54 @@ class NativeIntegration(unittest.TestCase):
 
     def test_mov_extension(self):
         self.assert_success(self.fixture(name='clip.MOV'), '--verify')
+
+    def test_true_mov_timecode_track_is_copied_not_regenerated(self):
+        base = self.root / 'timecode-base.mov'
+        source = self.root / 'timecode.MOV'
+        run([FFMPEG, '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
+             'testsrc2=size=128x72:rate=50:duration=2', '-f', 'lavfi', '-i',
+             'aevalsrc=0.08*sin(2*PI*220*t)|0.06*sin(2*PI*731*t):s=48000:d=2.137',
+             '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-threads', '1', '-c:a', 'aac',
+             '-timecode', '01:00:00:00', '-metadata', 'creation_time=2026-10-07T17:48:35Z',
+             '-metadata', 'title=Keep this title', '-metadata:s:a:0', 'language=deu', base])
+        # Match the real source: a genuine tmcd track with no codec_name and default=1.
+        # A separate remux lets us set the generated track's disposition explicitly.
+        run([FFMPEG, '-nostdin', '-v', 'error', '-i', base, '-map', '0', '-c', 'copy',
+             '-map_metadata', '0', '-disposition:d:0', 'default', '-write_tmcd', '0', source])
+        before = probe(source)
+        tracks = [s for s in before['streams'] if s['codec_type'] == 'data']
+        self.assertEqual(len(tracks), 1, 'fixture must contain one genuine timecode track')
+        track = tracks[0]
+        self.assertEqual(track['codec_tag_string'], 'tmcd')
+        self.assertNotIn('codec_name', track)
+        self.assertEqual(track['time_base'], '1/12800')
+        self.assertEqual(track['nb_frames'], '1')
+        self.assertEqual(track['disposition']['default'], 1)
+        self.assertAlmostEqual(float(track['start_time']), 0, delta=0.000001)
+        self.assertAlmostEqual(float(track['duration']), 2, delta=0.000001)
+        self.assertEqual(track['tags']['timecode'], '01:00:00:00')
+        self.assertEqual(track['tags']['handler_name'], 'TimeCodeHandler')
+        self.assertEqual(track['tags']['language'], 'eng')
+        self.assertEqual(track['tags']['creation_time'], '2026-10-07T17:48:35.000000Z')
+        main = next(s for s in before['streams'] if s['codec_type'] == 'video')
+        self.assertEqual(main['r_frame_rate'], '50/1')
+        self.assertEqual(main['tags']['timecode'], track['tags']['timecode'])
+        self.assertEqual(before['chapters'], [])
+        output = self.assert_success(source, '--verify')
+        after = probe(output)
+        result_tracks = [s for s in after['streams'] if s['codec_type'] == 'data']
+        self.assertEqual(len(result_tracks), 1, 'no regenerated or unknown data tracks are allowed')
+        result = result_tracks[0]
+        for key in ['codec_type', 'codec_tag_string', 'time_base', 'nb_frames', 'disposition', 'tags']:
+            with self.subTest(property=key):
+                self.assertEqual(track[key], result[key])
+        self.assertNotIn('codec_name', result)
+        for endpoint in ['start_time', 'duration']:
+            self.assertAlmostEqual(float(track[endpoint]), float(result[endpoint]), delta=0.001)
+        # The hash muxer also handles copied data. Check the original timecode packet value.
+        self.assertEqual(video_hash(source, track['index']), video_hash(output, result['index']))
+        result_main = next(s for s in after['streams'] if s['codec_type'] == 'video')
+        self.assertEqual(main['tags']['timecode'], result_main['tags']['timecode'])
 
     def test_rotation_chapters_and_attached_picture(self):
         source = self.fixture(name='base.MP4')

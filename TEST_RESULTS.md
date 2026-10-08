@@ -4,6 +4,9 @@ Tested source commit: `ded89d16a9bc97935afa0b554badff3c33baad0a`.
 Tests followed independent review approval. No production or test code changed.
 Run date: 2026-10-08 UTC. These results apply to this machine, runtime, and sample.
 
+The later `tmcd` timecode fix requires independent review and new formal tests.
+The PASS below applies only to the source commit named above, not to that fix.
+
 ## Environment and commands
 
 - MacBook Pro Mac15,10; Apple M3 Max; 14 CPU cores (10 performance, 4 efficiency); 36 GB RAM.

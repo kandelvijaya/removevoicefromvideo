@@ -28,7 +28,11 @@ public final class Pipeline {
         let audio = try media.validateInput()
         let channels = audio.channels!
         for stream in media.streams where stream.codec_type == "data" {
-            log("\(input.lastPathComponent): DROP unsupported data stream \(stream.index) (\(stream.codec_name ?? "unknown")); unmapped data payload will not appear in output")
+            if stream.isTimecode {
+                log("\(input.lastPathComponent): COPY supported tmcd timecode stream \(stream.index)")
+            } else {
+                log("\(input.lastPathComponent): DROP unsupported data stream \(stream.index) (\(stream.codec_name ?? "unknown")); unmapped data payload will not appear in output")
+            }
         }
         let work = final.deletingLastPathComponent().appendingPathComponent(".voiceremoved-" + UUID().uuidString, isDirectory: true)
         let encoded = work.appendingPathComponent("audio.m4a")
@@ -92,11 +96,11 @@ public final class Pipeline {
         let output = try tools.probe(temporary, cancellation)
         try validateOutput(source: media, output: output, frameCount: frames)
         if options.verify {
-            log("\(input.lastPathComponent): verify SHA-256 of every copied video packet payload")
-            for (original, result) in zip(media.retained, output.retained) where original.codec_type == "video" {
-                let before = try tools.videoHash(input, index: original.index, cancellation)
-                let after = try tools.videoHash(temporary, index: result.index, cancellation)
-                guard before == after else { throw Failure("video packet hash mismatch for stream \(original.index)") }
+            log("\(input.lastPathComponent): verify SHA-256 of every copied video and timecode packet payload")
+            for (original, result) in zip(media.retained, output.retained) where original.codec_type == "video" || original.isTimecode {
+                let before = try tools.packetHash(input, index: original.index, cancellation)
+                let after = try tools.packetHash(temporary, index: result.index, cancellation)
+                guard before == after else { throw Failure("copied packet hash mismatch for stream \(original.index)") }
             }
         }
         try cancellation.whileActive { try publish(temporary, to: final) }

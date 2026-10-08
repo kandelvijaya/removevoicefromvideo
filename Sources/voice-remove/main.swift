@@ -11,7 +11,7 @@ Folders are nonrecursive. Default: two passes, two concurrent folder jobs.
 --passes 1   Use one isolation unit instead of two.
 --jobs N     Limit concurrent folder jobs (default 2, maximum 8).
 --faststart  Rewrite MP4/MOV/M4V headers for progressive playback; extra disk work.
---verify     Compare SHA-256 hashes of every copied video stream (extra full reads).
+--verify     Compare SHA-256 hashes of copied video and timecode streams (extra full reads).
 --help       Show this help.
 Successful output paths go to stdout. Progress and errors go to stderr.
 """

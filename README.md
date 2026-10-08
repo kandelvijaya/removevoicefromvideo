@@ -36,7 +36,7 @@ Copy the compiled executable to a directory in `PATH` if needed. No helper execu
 | --- | --- |
 | `--passes 1` | Use one isolation unit. Default: two distinct units in sequence. |
 | `--jobs N` | Limit folder concurrency to 1–8 jobs. Default: 2. |
-| `--verify` | Compare SHA-256 hashes of copied video packet payloads, including attached pictures. |
+| `--verify` | Compare SHA-256 hashes of copied video and timecode packet payloads, including attached pictures. |
 | `--faststart` | Rewrite MP4/MOV/M4V headers for progressive playback. Default: off. |
 | `--help` | Show usage. |
 
@@ -70,7 +70,13 @@ The tool retains stereo channels. It does not assume dual-mono content or fall b
 
 The tool preserves all video streams, including attached pictures, when the container supports them.
 It copies subtitle streams when the container supports them. Unsupported combinations fail without publication.
-The tool reports and drops data streams, such as camera telemetry. The muxer can recreate a chapter data track.
+The tool copies `tmcd` timecode data tracks in MP4, MOV, and M4V. FFprobe can omit their codec name.
+The tool maps those tracks explicitly and disables automatic timecode-track generation with `-write_tmcd 0`.
+It retains the timecode value, handler, creation time, language, and dispositions.
+Timecode tracks require readable timing, a time base, a frame count, and a timecode tag before audio processing.
+Timecode tracks in other containers fail preflight.
+The tool reports and drops other data streams, such as DJI camera telemetry. The muxer can recreate a chapter data track.
+Unknown output data tracks fail validation. An extra or missing timecode track also fails validation.
 The tool maps file metadata, rotation, chapters, stream language, and dispositions explicitly.
 Validation rejects changed user metadata or unsupported metadata that the output container cannot retain.
 Container bookkeeping tags, such as encoder and brand tags, can change.
@@ -88,9 +94,10 @@ including `mov_write_meta_tag`, `mov_write_ilst_tag`, and `mov_write_udta_tag`.
 
 Validation checks stream structure, AAC format, timing, rotation, user metadata, chapters, language, and dispositions.
 The timing tolerance is 50 ms for AAC packet rounding and container precision.
+Copied timecode timing has a stricter 1 ms tolerance. Its time base and frame count must remain unchanged.
 Attached-picture timing is container-derived and does not receive the main-video duration check.
 The tool does **not** use `-shortest`. Audio can remain longer than the video.
-`--verify` adds whole-file reads and checks the concatenated packet payloads of each video stream.
+`--verify` adds whole-file reads and checks the concatenated packet payloads of each video and timecode stream.
 It does not compare the entire container file or measure speech attenuation.
 
 ## Resource use and failure behavior
@@ -148,6 +155,9 @@ They cover mono, distinct stereo, timing offsets, longer audio, MOV, rotation, c
 attached pictures, folder concurrency, unsupported tracks, no-overwrite behavior, and SIGINT/SIGTERM cleanup with exit status 130.
 The cover fixture asserts exactly one attached picture and a 90-degree rotation before it invokes the tool.
 Custom file metadata uses a separate fixture without cover art. A negative fixture checks early `--faststart` rejection.
+A separate 50 fps MOV fixture requires a genuine `tmcd` track before it invokes the tool.
+It checks copied timecode packet hashes, track count, type, timing, value, metadata, and disposition.
+These new timecode checks require independent review and a new test run; earlier results do not cover them.
 Integration tests need FFmpeg's `libx264` encoder. They do not touch `inputVideo.MP4`.
 
 After the synthetic suites pass, measure the real video separately:

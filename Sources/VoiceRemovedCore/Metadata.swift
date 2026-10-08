@@ -21,6 +21,17 @@ func validateCoverFileMetadata(_ tags: [String: String]?) throws {
     }
 }
 
+/// A copied tmcd track must retain its value and handler, not just its data type.
+/// Other user tags (including creation_time and language) receive normal validation.
+func validateTimecodeTags(_ before: [String: String]?, _ after: [String: String]?, context: String) throws {
+    guard let value = before?["timecode"], !value.isEmpty, after?["timecode"] == value else {
+        throw Failure("validation failed: \(context) timecode value changed or is missing")
+    }
+    if let handler = before?["handler_name"], after?["handler_name"] != handler {
+        throw Failure("validation failed: \(context) handler metadata changed")
+    }
+}
+
 /// Missing user tags cause a failure before publication, not a silent loss.
 func validateTags(_ before: [String: String]?, _ after: [String: String]?, context: String) throws {
     let actual = Dictionary((after ?? [:]).map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { first, _ in first })

@@ -5,6 +5,9 @@ struct Media: Decodable {
         let index: Int
         let codec_type: String?
         let codec_name: String?
+        let codec_tag_string: String?
+        let time_base: String?
+        let nb_frames: String?
         let channels: Int?
         let sample_rate: String?
         let start_time: String?
@@ -25,6 +28,8 @@ struct Media: Decodable {
             return nil
         }
         var rotation: Int? { side_data_list?.compactMap(\.rotation).first }
+        // ffprobe can omit codec_name for a valid MOV timecode track.
+        var isTimecode: Bool { codec_type == "data" && codec_tag_string == "tmcd" }
     }
     struct SideData: Decodable { let rotation: Int? }
     struct Chapter: Decodable {
@@ -38,7 +43,7 @@ struct Media: Decodable {
     let format: Format?
 
     var audio: [Stream] { streams.filter { $0.codec_type == "audio" } }
-    var retained: [Stream] { streams.filter { ["video", "audio", "subtitle"].contains($0.codec_type ?? "") } }
+    var retained: [Stream] { streams.filter { ["video", "audio", "subtitle"].contains($0.codec_type ?? "") || $0.isTimecode } }
     func validateInput() throws -> Stream {
         guard audio.count == 1 else { throw Failure("expected one audio track, found \(audio.count); no-audio and multi-audio inputs are unsupported") }
         guard let channels = audio[0].channels, channels == 1 || channels == 2 else {
@@ -61,7 +66,7 @@ extension Tools {
         do { return try JSONDecoder().decode(Media.self, from: data) }
         catch { throw Failure("invalid ffprobe JSON for \(url.lastPathComponent): \(error)") }
     }
-    func videoHash(_ url: URL, index: Int, _ cancellation: Cancellation) throws -> Data {
+    func packetHash(_ url: URL, index: Int, _ cancellation: Cancellation) throws -> Data {
         try capture(ffmpeg, ["-nostdin", "-hide_banner", "-v", "error", "-i", url.path, "-map", "0:\(index)",
                             "-c", "copy", "-f", "hash", "-hash", "sha256", "pipe:1"], cancellation, limit: 4096)
     }
@@ -92,31 +97,56 @@ func remuxContainerArguments(input: URL, media: Media, faststart: Bool) throws -
     let ext = input.pathExtension.lowercased()
     let isMOV = ["mp4", "mov", "m4v"].contains(ext)
     if faststart && !isMOV { throw Failure("--faststart only supports MP4, MOV, and M4V") }
+    let timecodes = media.streams.filter(\.isTimecode)
+    if !timecodes.isEmpty {
+        guard isMOV else { throw Failure("tmcd timecode tracks require MP4, MOV, or M4V") }
+        for stream in timecodes {
+            guard let start = stream.start, start.isFinite,
+                  let duration = stream.length, duration.isFinite, duration > 0,
+                  stream.time_base != nil, stream.nb_frames != nil,
+                  let value = stream.tags?["timecode"], !value.isEmpty else {
+                throw Failure("timecode stream \(stream.index) lacks timing, frame count, or timecode metadata")
+            }
+        }
+    }
     guard isMOV else { return [] }
+    // Only copy explicitly mapped tmcd tracks. Never synthesize an unrequested track
+    // from a video's timecode tag (which otherwise bypasses our stream mapping).
+    let timecodeArguments = ["-write_tmcd", "0"]
     let hasPicture = media.streams.contains { $0.disposition?["attached_pic"] == 1 }
     if hasPicture {
         // FFmpeg's MOV udta path writes neither covr nor iTunes metadata.
         guard ext != "mov" else { throw Failure("attached pictures in MOV are unsupported by the FFmpeg MOV muxer") }
         try validateCoverFileMetadata(media.format?.tags)
         // use_metadata_tags selects mdta and bypasses covr. Keep the iTunes path.
-        return faststart ? ["-movflags", "+faststart"] : []
+        return timecodeArguments + (faststart ? ["-movflags", "+faststart"] : [])
     }
     // No cover art: mdta can retain arbitrary file-level keys.
-    return ["-movflags", faststart ? "+use_metadata_tags+faststart" : "+use_metadata_tags"]
+    return timecodeArguments + ["-movflags", faststart ? "+use_metadata_tags+faststart" : "+use_metadata_tags"]
 }
 
 func validateOutput(source: Media, output: Media, frameCount: Int) throws {
     let originals = source.retained
     guard output.retained.count == originals.count else { throw Failure("validation failed: stream count changed") }
     // The MOV muxer can synthesize a chapter data track. It is not camera telemetry.
-    let additional = output.streams.filter { !["video", "audio", "subtitle"].contains($0.codec_type ?? "") }
+    let additional = output.streams.filter { !["video", "audio", "subtitle"].contains($0.codec_type ?? "") && !$0.isTimecode }
     guard additional.allSatisfy({ $0.codec_type == "data" && $0.codec_name == "bin_data" && !(source.chapters ?? []).isEmpty }) else {
         throw Failure("validation failed: unexpected extra output stream")
     }
     let tolerance = 0.05 // AAC frame rounding and container time-base precision.
     for (before, after) in zip(originals, output.retained) {
         guard before.codec_type == after.codec_type else { throw Failure("validation failed: stream order changed") }
-        if before.codec_type != "audio" {
+        if before.isTimecode {
+            guard after.isTimecode, before.codec_name == after.codec_name,
+                  before.time_base == after.time_base, before.nb_frames == after.nb_frames,
+                  let start = before.start, let resultStart = after.start,
+                  let duration = before.length, let resultDuration = after.length,
+                  start.isFinite, resultStart.isFinite, duration.isFinite, resultDuration.isFinite,
+                  abs(start - resultStart) <= 0.001, abs(duration - resultDuration) <= 0.001 else {
+                throw Failure("validation failed: copied timecode track format or timing changed")
+            }
+            try validateTimecodeTags(before.tags, after.tags, context: "timecode stream \(before.index)")
+        } else if before.codec_type != "audio" {
             guard before.codec_name == after.codec_name, before.width == after.width, before.height == after.height else {
                 throw Failure("validation failed: copied stream format changed")
             }
