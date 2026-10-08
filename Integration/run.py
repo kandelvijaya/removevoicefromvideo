@@ -70,6 +70,10 @@ class NativeIntegration(unittest.TestCase):
             args += ['-map', '1:a', '-c:a', 'aac', '-b:a', '160k', '-metadata:s:a:0', 'language=deu']
         args += ['-metadata:s:v:0', 'language=eng', '-metadata', 'title=Keep this title', '-metadata', 'comment=Conversation suppression fixture', path]
         run(args)
+        if audio and path.suffix.lower() == '.mp4':
+            audio_stream = next(s for s in probe(path)['streams'] if s['codec_type'] == 'audio')
+            self.assertEqual((audio_stream.get('tags') or {}).get('language'), 'deu',
+                             'MP4 fixture must contain the intended audio language')
         return path
 
     def output(self, source):
@@ -105,7 +109,14 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(b['sample_rate'], '48000')
         self.assertLess(abs(float(a['start_time']) - float(b['start_time'])), 0.05)
         self.assertLess(abs(float(a['duration']) - float(b['duration'])), 0.05)
-        self.assertEqual(b['tags']['language'], 'deu')
+        source_language = (a.get('tags') or {}).get('language')
+        result_language = (b.get('tags') or {}).get('language')
+        if source_language is None and source.suffix.lower() in {'.mp4', '.mov', '.m4v'}:
+            # ISO-BMFF can expose an unspecified language as absent or as "und".
+            # Never accept a new specific language or loss of an explicit source tag.
+            self.assertIn(result_language, (None, 'und'))
+        else:
+            self.assertEqual(result_language, source_language)
         self.assertEqual(before['format']['tags']['title'], after['format']['tags']['title'])
         return output
 
@@ -157,10 +168,23 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(len(result_covers), 1)
         self.assertEqual(covers[0]['disposition'], result_covers[0]['disposition'])
         self.assertEqual(video_hash(decorated, covers[0]['index']), video_hash(output, result_covers[0]['index']))
-        self.assertEqual(before['chapters'], after['chapters'])
-        self.assertEqual(before['format']['tags']['comment'], after['format']['tags']['comment'])
+        # Check each fidelity property even if another property fails.
+        with self.subTest(property='comment'):
+            self.assertEqual(before['format']['tags']['comment'], after['format']['tags']['comment'])
         after_main = next(s for s in after['streams'] if s['codec_type'] == 'video' and not s['disposition']['attached_pic'])
-        self.assertEqual(before_main.get('side_data_list'), after_main.get('side_data_list'))
+        with self.subTest(property='rotation side data'):
+            self.assertEqual(before_main.get('side_data_list'), after_main.get('side_data_list'))
+        with self.subTest(property='chapter count and order'):
+            self.assertEqual([c['id'] for c in before['chapters']], [c['id'] for c in after['chapters']])
+        for a, b in zip(before['chapters'], after['chapters']):
+            with self.subTest(chapter=a['id'], property='tags'):
+                self.assertEqual(a.get('tags') or {}, b.get('tags') or {})
+            for endpoint in ('start_time', 'end_time'):
+                with self.subTest(chapter=a['id'], property=endpoint):
+                    # MOV/MP4 chapter tracks can quantize to milliseconds. AAC's
+                    # 50 ms tolerance is unnecessary for copied chapter times.
+                    # Compare seconds, not muxer-specific time bases or ticks.
+                    self.assertAlmostEqual(float(a[endpoint]), float(b[endpoint]), delta=0.001)
 
     def test_custom_file_metadata_without_attached_picture(self):
         source = self.fixture(name='base.MP4')
@@ -217,7 +241,10 @@ class NativeIntegration(unittest.TestCase):
         ignored.write_bytes(b'not an input')
         before = {p: content_hash(p) for p in [one, two, ignored]}
         result = run([BINARY, self.root, '--jobs', '2', '--passes', '1'])
-        self.assertEqual(set(result.stdout.splitlines()), {str(self.output(one)), str(self.output(two))})
+        # Foundation and Python can spell the same macOS temp path differently
+        # (/private/var versus /var). Retain exact membership and output counts.
+        self.assertCountEqual([Path(line).resolve() for line in result.stdout.splitlines()],
+                              [self.output(one).resolve(), self.output(two).resolve()])
         for path, digest in before.items():
             self.assertEqual(content_hash(path), digest)
         self.assert_clean()
