@@ -30,6 +30,16 @@ struct Media: Decodable {
         var rotation: Int? { side_data_list?.compactMap(\.rotation).first }
         // ffprobe can omit codec_name for a valid MOV timecode track.
         var isTimecode: Bool { codec_type == "data" && codec_tag_string == "tmcd" }
+        var hasValidTimecodeTiming: Bool {
+            guard let start = start, start.isFinite,
+                  let duration = length, duration.isFinite, duration > 0,
+                  let timeBase = time_base else { return false }
+            let parts = timeBase.split(separator: "/", omittingEmptySubsequences: false)
+            // FFmpeg uses signed 32-bit AVRational components and a signed 64-bit frame count.
+            return parts.count == 2 && parts.allSatisfy {
+                isPositiveTimecodeInteger(String($0), maximum: Int64(Int32.max))
+            } && isPositiveTimecodeInteger(nb_frames)
+        }
     }
     struct SideData: Decodable { let rotation: Int? }
     struct Chapter: Decodable {
@@ -58,6 +68,13 @@ struct Media: Decodable {
         }
         return audio[0]
     }
+}
+
+/// Require decimal digits only; reject signs, whitespace, placeholders, and overflow.
+private func isPositiveTimecodeInteger(_ text: String?, maximum: Int64 = Int64.max) -> Bool {
+    guard let text = text, !text.isEmpty, text.utf8.allSatisfy({ (48...57).contains($0) }),
+          let value = Int64(text), value > 0, value <= maximum else { return false }
+    return true
 }
 
 extension Tools {
@@ -95,21 +112,21 @@ func remuxArguments(input: URL, audio: URL, temporary: URL, media: Media, fastst
 /// Call before isolation or audio decoding, not just at final remux time.
 func remuxContainerArguments(input: URL, media: Media, faststart: Bool) throws -> [String] {
     let ext = input.pathExtension.lowercased()
-    let isMOV = ["mp4", "mov", "m4v"].contains(ext)
-    if faststart && !isMOV { throw Failure("--faststart only supports MP4, MOV, and M4V") }
+    let isMOVFamily = ["mp4", "mov", "m4v"].contains(ext)
+    if faststart && !isMOVFamily { throw Failure("--faststart only supports MP4, MOV, and M4V") }
     let timecodes = media.streams.filter(\.isTimecode)
     if !timecodes.isEmpty {
-        guard isMOV else { throw Failure("tmcd timecode tracks require MP4, MOV, or M4V") }
+        // MOV's codec table supports copied tmcd (AV_CODEC_ID_NONE); MP4/M4V tables do not.
+        // Automatic timecode generation uses a separate muxer path and is disabled below.
+        guard ext == "mov" else { throw Failure("copied tmcd timecode tracks require MOV; MP4, M4V, and other containers are unsupported") }
         for stream in timecodes {
-            guard let start = stream.start, start.isFinite,
-                  let duration = stream.length, duration.isFinite, duration > 0,
-                  stream.time_base != nil, stream.nb_frames != nil,
+            guard stream.hasValidTimecodeTiming,
                   let value = stream.tags?["timecode"], !value.isEmpty else {
-                throw Failure("timecode stream \(stream.index) lacks timing, frame count, or timecode metadata")
+                throw Failure("timecode stream \(stream.index) lacks valid timing, a positive rational time base, a positive frame count, or timecode metadata")
             }
         }
     }
-    guard isMOV else { return [] }
+    guard isMOVFamily else { return [] }
     // Only copy explicitly mapped tmcd tracks. Never synthesize an unrequested track
     // from a video's timecode tag (which otherwise bypasses our stream mapping).
     let timecodeArguments = ["-write_tmcd", "0"]
@@ -138,10 +155,10 @@ func validateOutput(source: Media, output: Media, frameCount: Int) throws {
         guard before.codec_type == after.codec_type else { throw Failure("validation failed: stream order changed") }
         if before.isTimecode {
             guard after.isTimecode, before.codec_name == after.codec_name,
+                  before.hasValidTimecodeTiming, after.hasValidTimecodeTiming,
                   before.time_base == after.time_base, before.nb_frames == after.nb_frames,
                   let start = before.start, let resultStart = after.start,
                   let duration = before.length, let resultDuration = after.length,
-                  start.isFinite, resultStart.isFinite, duration.isFinite, resultDuration.isFinite,
                   abs(start - resultStart) <= 0.001, abs(duration - resultDuration) <= 0.001 else {
                 throw Failure("validation failed: copied timecode track format or timing changed")
             }

@@ -70,13 +70,21 @@ The tool retains stereo channels. It does not assume dual-mono content or fall b
 
 The tool preserves all video streams, including attached pictures, when the container supports them.
 It copies subtitle streams when the container supports them. Unsupported combinations fail without publication.
-The tool copies `tmcd` timecode data tracks in MP4, MOV, and M4V. FFprobe can omit their codec name.
+The tool copies `tmcd` timecode data tracks in MOV only. FFprobe can omit their codec name.
 The tool maps those tracks explicitly and disables automatic timecode-track generation with `-write_tmcd 0`.
 It retains the timecode value, handler, creation time, language, and dispositions.
-Timecode tracks require readable timing, a time base, a frame count, and a timecode tag before audio processing.
-Timecode tracks in other containers fail preflight.
+Timecode tracks require finite start times, positive finite durations, and a nonempty timecode tag before audio processing.
+Time bases require two positive ASCII decimal integers separated by `/`. Each component must fit a signed 32-bit integer.
+Frame counts require a positive ASCII decimal integer that fits a signed 64-bit integer.
+Time bases and frame counts reject signs, whitespace, missing values, and `N/A`.
+They also reject zero, negative values, overflow, and malformed numeric fields. Finite negative start times remain valid.
+These rules apply to source and output tracks. Identical malformed values also fail validation.
+Copied timecode tracks in MP4, M4V, and other containers fail preflight. Ordinary MP4/M4V inputs remain supported.
+FFmpeg's MP4/M4V codec tables reject copied `tmcd` tracks; automatic timecode generation uses a separate path.
 The tool reports and drops other data streams, such as DJI camera telemetry. The muxer can recreate a chapter data track.
-Unknown output data tracks fail validation. An extra or missing timecode track also fails validation.
+Unknown output data tracks fail validation, except `bin_data` tracks when the source has chapters.
+This exception does not check track identity or limit the number of `bin_data` tracks.
+An extra or missing timecode track always fails validation, including when the source has chapters.
 The tool maps file metadata, rotation, chapters, stream language, and dispositions explicitly.
 Validation rejects changed user metadata or unsupported metadata that the output container cannot retain.
 Container bookkeeping tags, such as encoder and brand tags, can change.
@@ -157,6 +165,7 @@ The cover fixture asserts exactly one attached picture and a 90-degree rotation 
 Custom file metadata uses a separate fixture without cover art. A negative fixture checks early `--faststart` rejection.
 A separate 50 fps MOV fixture requires a genuine `tmcd` track before it invokes the tool.
 It checks copied timecode packet hashes, track count, type, timing, value, metadata, and disposition.
+Unit tests also cover MOV-only timecode preflight and invalid numeric fields, including identical malformed source and output values.
 These new timecode checks require independent review and a new test run; earlier results do not cover them.
 Integration tests need FFmpeg's `libx264` encoder. They do not touch `inputVideo.MP4`.
 
