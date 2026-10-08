@@ -88,11 +88,15 @@ An extra or missing timecode track always fails validation, including when the s
 The tool maps file metadata, rotation, chapters, stream language, and dispositions explicitly.
 Validation rejects changed user metadata or unsupported metadata that the output container cannot retain.
 Container bookkeeping tags, such as encoder and brand tags, can change.
+Creation-time validation compares exact instants, including all fractional digits, rather than timestamp text.
+Only valid RFC 3339 timestamps receive this comparison. Different dates, invalid dates, and reduced fractional precision fail.
+FFprobe can join MOV header and `mdta` creation times with `;`. Every value must describe the same instant.
+Conflicting or malformed values cannot receive semantic equivalence. All other user tags require exact values.
 
 MP4/M4V cover art requires FFmpeg's standard iTunes metadata path, which writes the `covr` atom.
 The tool disables `use_metadata_tags` when an attached picture exists. `--faststart` remains available.
 Standard file tags include title, comment, artist, album, copyright, and creation time.
-Unknown file tags with cover art fail preflight. Recognized tags must still pass exact value validation after remux.
+Unknown file tags with cover art fail preflight. Recognized tags must still pass value validation after remux.
 Without cover art, MP4/MOV/M4V use `use_metadata_tags` (`mdta`) to retain custom file tags.
 This flag does not add support for arbitrary stream or chapter tags.
 MOV inputs with attached pictures fail preflight: FFmpeg's native MOV metadata path does not write `covr`.

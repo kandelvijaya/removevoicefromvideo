@@ -4,6 +4,7 @@ python3 Integration/run.py --binary /absolute/path/to/voice-remove
 All fixtures live in a fresh temporary folder; no project media is used.
 """
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -177,8 +178,18 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(main['r_frame_rate'], '50/1')
         self.assertEqual(main['tags']['timecode'], track['tags']['timecode'])
         self.assertEqual(before['chapters'], [])
+        self.assertEqual(before['format']['tags']['creation_time'], '2026-10-07T17:48:35.000000Z')
         output = self.assert_success(source, '--verify')
         after = probe(output)
+        # MOV can expose the same creation instant from both mvhd and mdta, joined with ';'.
+        # Check every value; never accept a missing date, a different date, or fractional loss.
+        expected_creation = datetime(2026, 10, 7, 17, 48, 35, tzinfo=timezone.utc)
+        for value in after['format']['tags']['creation_time'].split(';'):
+            with self.subTest(property='file creation instant', value=value):
+                # datetime truncates beyond microseconds. Require an exactly zero fraction here.
+                self.assertRegex(value, r'\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+                                 r'(?:\.0+)?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z')
+                self.assertEqual(datetime.fromisoformat(value.replace('Z', '+00:00')), expected_creation)
         result_tracks = [s for s in after['streams'] if s['codec_type'] == 'data']
         self.assertEqual(len(result_tracks), 1, 'no regenerated or unknown data tracks are allowed')
         result = result_tracks[0]

@@ -1,4 +1,4 @@
-# Independent final test results: PASS
+# Independent test results
 
 Tested source commit: `ded89d16a9bc97935afa0b554badff3c33baad0a`.
 Tests followed independent review approval. No production or test code changed.
@@ -6,6 +6,41 @@ Run date: 2026-10-08 UTC. These results apply to this machine, runtime, and samp
 
 The later `tmcd` timecode fix requires independent review and new formal tests.
 The PASS below applies only to the source commit named above, not to that fix.
+
+## Latest MOV metadata fix: formal tests pending
+
+The timecode test run at `65cc8dc` passed 32 unit tests and the release build.
+Its integration suite passed 12 of 13 tests. The genuine MOV timecode fixture failed file creation-time validation.
+Evidence: `.build/test-results/timecode-run/integration.log`. The large user video did not run.
+
+Small FFmpeg 9.0.2 copy-remux diagnostics reproduced these exact file tag values:
+
+```text
+source: 2026-10-07T17:48:35.000000Z
+output: 2026-10-07T17:48:35.000000Z;2026-10-07T17:48:35.000000Z
+```
+
+The date was retained, not lost or changed. `use_metadata_tags` writes creation time in both `mvhd` and `mdta`.
+FFprobe joins those values with `;`; the original validator required identical text.
+Stream creation-time tags remained `2026-10-07T17:48:35.000000Z`.
+
+The fix compares strictly parsed RFC 3339 instants only for `creation_time`.
+It retains every fractional digit and accepts only redundant, equal timestamp values.
+Different dates, fractional precision loss, invalid dates, malformed text, and conflicting lists fail semantic comparison.
+Other metadata keeps exact comparison. No remux change or metadata exclusion was necessary.
+Four new unit methods cover these rules. The integration fixture now checks every emitted file creation instant.
+
+Development checks only, without formal test execution:
+
+- `swift build -c release`: passed.
+- `swift build --build-tests`: passed; test targets compiled without execution.
+- `swift build -c release --build-tests`: failed with an incompatible `VoiceRemovedCore` module dependency.
+  The separate release build and debug test-target build passed.
+- Python compilation and `git diff --check`: passed.
+- A standalone Swift diagnostic validated the captured before/after tags with the revised production metadata code.
+
+Local diagnostic evidence: `.build/metadata-diagnostics/`, including probe JSON and build logs.
+Independent review and new formal tests remain required. The user video remains unprocessed.
 
 ## Environment and commands
 

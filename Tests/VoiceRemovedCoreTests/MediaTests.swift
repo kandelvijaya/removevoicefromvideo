@@ -249,6 +249,59 @@ final class MediaTests: XCTestCase {
         XCTAssertThrowsError(try validateTags(["title": "Keep me"], [:], context: "file"))
         XCTAssertNoThrow(try validateTags(["encoder": "old", "title": "Keep me"], ["encoder": "new", "TITLE": "Keep me"], context: "file"))
     }
+    func testCreationTimeEquivalentFormatsAndRedundantMOVValuesPass() throws {
+        let values = [
+            ("2026-10-07T17:48:35.000000Z", "2026-10-07T17:48:35Z"),
+            ("2026-10-07T17:48:35Z", "2026-10-07T19:48:35.000+02:00"),
+            ("2026-10-07T17:48:35Z", "2026-10-07T12:18:35-05:30"),
+            ("2026-10-07T23:48:35Z", "2026-10-08T01:48:35+02:00"),
+            ("2024-02-29T23:48:35Z", "2024-03-01T01:48:35+02:00"),
+            ("2026-10-07T17:48:35.123456789123Z", "2026-10-07T17:48:35.123456789123000+00:00"),
+            ("2026-10-07T17:48:35.000000Z", "2026-10-07T17:48:35.000000Z;2026-10-07T17:48:35.000000Z"),
+            ("2026-10-07T17:48:35Z;2026-10-07T19:48:35+02:00", "2026-10-07T17:48:35.000Z")
+        ]
+        for (before, after) in values {
+            for context in ["file", "stream 2"] {
+                XCTAssertNoThrow(try validateTags(["creation_time": before], ["CREATION_TIME": after], context: context), after)
+                XCTAssertNoThrow(try validateTags(["creation_time": after], ["creation_time": before], context: context), before)
+            }
+        }
+    }
+    func testCreationTimeDifferentInstantsOrLostPrecisionFail() throws {
+        let original = "2026-10-07T17:48:35.123456789123Z"
+        for changed in ["2026-10-08T17:48:35.123456789123Z", "2026-10-07T17:48:36.123456789123Z",
+                        "2026-10-07T17:48:35Z", "2026-10-07T17:48:35.123456Z",
+                        "2026-10-07T17:48:35.123456789124Z", "2026-10-07T17:48:35.123456789123+02:00",
+                        original + ";2026-10-07T17:48:35.123456789124Z"] {
+            XCTAssertThrowsError(try validateTags(["creation_time": original], ["creation_time": changed], context: "file"), changed)
+        }
+        XCTAssertThrowsError(try validateTags(["creation_time": original], [:], context: "file"))
+    }
+    func testCreationTimeMalformedValuesCannotReceiveFormatEquivalence() throws {
+        let original = "2026-10-07T17:48:35Z"
+        for invalid in ["", "N/A", "2026-10-07", "2026-10-07 17:48:35Z", "2026-10-07T17:48:35",
+                        "2026-10-07T17:48:35.Z", "2026-10-07T17:48:35Zjunk", " " + original, original + "\n",
+                        "2026-10-07t17:48:35z", "2026-10-07T17:48:35+0000", "2026-10-07T17:48:35-00:00",
+                        "2026-10-07T17:48:35+24:00", "2026-10-07T17:48:35+00:60",
+                        "2026-10-07T24:48:35Z", "2026-10-07T17:60:35Z", "2026-10-07T17:48:60Z",
+                        "0000-10-07T17:48:35Z", "2026-00-07T17:48:35Z", "2026-13-07T17:48:35Z",
+                        "2026-10-00T17:48:35Z", "2026-04-31T17:48:35Z", "2026-02-29T17:48:35Z",
+                        "1900-02-29T17:48:35Z", "２０２６-10-07T17:48:35Z",
+                        original + ";", ";" + original, original + ";;" + original, original + ";N/A"] {
+            XCTAssertThrowsError(try validateTags(["creation_time": original], ["creation_time": invalid], context: "file"), invalid)
+            XCTAssertThrowsError(try validateTags(["creation_time": invalid], ["creation_time": original], context: "file"), invalid)
+        }
+        // Invalid calendar dates must not normalize to a different spelling of that invalid date.
+        XCTAssertThrowsError(try validateTags(["creation_time": "2026-02-29T17:48:35Z"],
+                                             ["creation_time": "2026-02-29T17:48:35.000Z"], context: "file"))
+    }
+    func testTimestampEquivalenceDoesNotRelaxOtherUserMetadata() throws {
+        let before = "2026-10-07T17:48:35.000000Z"
+        for key in ["date", "title", "timecode", "project_note"] {
+            XCTAssertThrowsError(try validateTags([key: before], [key: "2026-10-07T17:48:35Z"], context: "file"), key)
+            XCTAssertThrowsError(try validateTags([key: before], [key: before + ";" + before], context: "file"), key)
+        }
+    }
     func testOutputValidationRejectsShortenedAudio() throws {
         let source = try decode(fixture)
         let output = try decode("""
