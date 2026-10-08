@@ -1,21 +1,33 @@
-inputVideo.MP4
+# Swift build products and local workspace state
 .build/
 .swiftpm/
 .DS_Store
-*.MP4
-*.mp4
-*.mov
-*.MOV
-*.m4v
-*.mkv
-*.MKV
-*.avi
-*.AVI
-*.webm
-*.WEBM
-*_voiceremoved.*
-*.m4a
-*.wav
+
+# Personal media and generated outputs (case-insensitive extensions)
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[mM]4[vV]
+*.[mM][kK][vV]
+*.[aA][vV][iI]
+*.[wW][eE][bB][mM]
+*.[mM]4[aA]
+*.[wW][aA][vV]
+*.[aA][iI][fF]
+*.[aA][iI][fF][fF]
+*.[fF][lL][aA][cC]
+*.[mM][pP]3
 *.f32
+*_voiceremoved.*
 .voiceremoved-*/
+
+# Test evidence and Python cache
 Integration/results/
+__pycache__/
+*.py[cod]
+
+# Local credentials and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key

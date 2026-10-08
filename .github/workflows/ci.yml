@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      native_integration:
+        description: Run native Apple isolation fixtures (runner support unverified)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install FFmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            brew install ffmpeg
+          fi
+      - name: Show environment
+        run: |
+          sw_vers
+          swift --version
+          ffmpeg -version
+      - name: Run unit tests
+        run: swift test
+      - name: Build release and check CLI help
+        run: |
+          swift build -c release
+          BIN="$(swift build -c release --show-bin-path)/voice-remove"
+          "$BIN" --help
+      - name: Run optional native integration tests
+        if: github.event_name == 'workflow_dispatch' && inputs.native_integration
+        run: |
+          BIN="$(swift build -c release --show-bin-path)/voice-remove"
+          python3 Integration/run.py --binary "$BIN" -v

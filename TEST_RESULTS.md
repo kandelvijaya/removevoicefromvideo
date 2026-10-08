@@ -4,10 +4,13 @@ Tested source commit: `ded89d16a9bc97935afa0b554badff3c33baad0a`.
 Tests followed independent review approval. No production or test code changed.
 Run date: 2026-10-08 UTC. These results apply to this machine, runtime, and sample.
 
-The later `tmcd` timecode fix requires independent review and new formal tests.
-The PASS below applies only to the source commit named above, not to that fix.
+The PASS below applies only to the source commit named above.
+Later successful tests appear in [PRAGUE_TEST_RESULTS.md](PRAGUE_TEST_RESULTS.md) and
+[AUDIO_ONLY_TEST_RESULTS.md](AUDIO_ONLY_TEST_RESULTS.md).
 
-## Latest MOV metadata fix: formal tests pending
+## Historical MOV diagnostics (superseded)
+
+This section records development status before the successful large MOV test. It is not current project status.
 
 The timecode test run at `65cc8dc` passed 32 unit tests and the release build.
 Its integration suite passed 12 of 13 tests. The genuine MOV timecode fixture failed file creation-time validation.
@@ -47,7 +50,7 @@ Independent review and new formal tests remain required. The user video remains 
 - MacBook Pro Mac15,10; Apple M3 Max; 14 CPU cores (10 performance, 4 efficiency); 36 GB RAM.
 - macOS 27.0.1 (26A434); Swift 6.4; FFmpeg and ffprobe 9.0.2.
 - Battery power, 75% at start; power mode 0. No power settings changed.
-- Release executable: `/Users/vkandel_1/Projects/video_audio/.build/out/Products/Release/voice-remove`.
+- Release executable: `.build/out/Products/Release/voice-remove` in the local checkout.
 
 ```sh
 swift test
@@ -71,7 +74,7 @@ metadata, folder concurrency, rejected tracks, collisions, and SIGINT/SIGTERM cl
 
 ## Real-video benchmark
 
-Output: `/Users/vkandel_1/Projects/video_audio/inputVideo_voiceremoved.MP4`.
+Output: `inputVideo_voiceremoved.MP4`, beside the local input.
 
 - Settings: default two distinct AUSoundIsolation units; HQ conversation mode 0; wet/dry -100.
 - Both units reported 6360 latency frames each (132.5 ms at 48 kHz).

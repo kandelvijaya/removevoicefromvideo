@@ -22,6 +22,9 @@ BIN="$(swift build -c release --show-bin-path)/voice-remove"
 Swift Package Manager chooses the build directory. Do not assume `.build/release` exists.
 Copy the compiled executable to a directory in `PATH` if needed. No helper executable or shell wrapper is required.
 
+The repository does not include sample videos, model downloads, or build products.
+Apple supplies the native model through macOS. FFmpeg and ffprobe run locally; the tool does not upload media.
+
 ## Use
 
 ```sh
@@ -156,7 +159,7 @@ It does not compare the entire container file or measure speech attenuation.
 PCM memory stays bounded by block size and pass count, not video duration.
 Apple's model allocates additional memory. Two concurrent jobs create four model instances.
 Use `--jobs 1` if memory pressure is high. More jobs do not guarantee more throughput.
-No throughput or speech-removal rate is claimed before independent tests and measurement.
+Throughput depends on hardware, runtime, media, and disk speed. Local benchmarks do not establish a general speech-removal rate.
 
 The default path needs a new video-sized output and a compressed AAC temporary file.
 The WAV path needs only the new WAV, approximately 144,000 bytes per second per channel, plus its small header.
@@ -184,14 +187,14 @@ The tool cannot undo a valid output that completed before cancellation.
 - The native model can change output across macOS versions. Native output is not byte-reproducible.
 - File permissions and extended attributes are not copied to the output. Originals remain unchanged.
 
-## Review and test sequence
+## Tests
 
-**Do not run formal tests until independent review passes.**
-Release compilation, test-target compilation, and CLI help received development checks during implementation.
-The test targets compiled without execution.
-The suites below are code for the test stage; their presence does not mean they passed.
+The latest local run passed **44 unit tests and 17 native integration tests**.
+See [audio-only results](AUDIO_ONLY_TEST_RESULTS.md), [large MOV results](PRAGUE_TEST_RESULTS.md),
+and [initial benchmark results](TEST_RESULTS.md) for tested commits, environments, and limitations.
+These local results are not a claim that GitHub-hosted native tests passed.
 
-After review:
+Run the suites on macOS 15 or later with FFmpeg installed:
 
 ```sh
 swift test
@@ -200,12 +203,10 @@ BIN="$(swift build -c release --show-bin-path)/voice-remove"
 python3 Integration/run.py --binary "$BIN" -v
 ```
 
-Audio-only changes require a new independent review before formal tests run.
-The new deterministic tests cover alignment across partial blocks, positive/negative offsets, no audio coverage,
+The deterministic tests cover alignment across partial blocks, positive/negative offsets, no audio coverage,
 fractional sample boundaries, per-pass drain accounting, WAV metadata mismatches, and incompatible flags.
 Native WAV fixtures cover mono/stereo, nonzero video starts, initial silence, start/end trims, end padding,
 exact decoded sample counts, folder collisions, no-overwrite behavior, and absence of AAC/video intermediates.
-These additions are not a claim that the new suites passed.
 
 Unit tests use a deterministic delay renderer. They cover initial latency discard, exact lengths, empty audio,
 partial byte reads, short blocks, independent stereo samples, and one-pass and two-pass pipelines.
@@ -218,8 +219,12 @@ Custom file metadata uses a separate fixture without cover art. A negative fixtu
 A separate 50 fps MOV fixture requires a genuine `tmcd` track before it invokes the tool.
 It checks copied timecode packet hashes, track count, type, timing, value, metadata, and disposition.
 Unit tests also cover MOV-only timecode preflight and invalid numeric fields, including identical malformed source and output values.
-These new timecode checks require independent review and a new test run; earlier results do not cover them.
-Integration tests need FFmpeg's `libx264` encoder. They do not touch `inputVideo.MP4`.
+Integration tests need FFmpeg's `libx264` encoder. They do not require personal media.
+
+[GitHub Actions](.github/workflows/ci.yml) runs unit tests, a release build, and a CLI help check on macOS 15.
+Native integration tests are optional through **Actions → CI → Run workflow**.
+Native Apple model availability on GitHub runners remains unverified.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and publication checks.
 
 After the synthetic suites pass, measure the real video separately:
 
