@@ -125,6 +125,133 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(before['format']['tags']['title'], after['format']['tags']['title'])
         return output
 
+    def assert_audio_only(self, source, *flags):
+        original = content_hash(source)
+        original_mtime = source.stat().st_mtime_ns
+        before = probe(source)
+        main = next(s for s in before['streams'] if s['codec_type'] == 'video'
+                    and not s.get('disposition', {}).get('attached_pic'))
+        audio = next(s for s in before['streams'] if s['codec_type'] == 'audio')
+        channels = audio['channels']
+        expected = int(float(main['duration']) * 48000 + 0.5)
+        delta_frames = (float(audio['start_time']) - float(main['start_time'])) * 48000
+        offset = int(delta_frames + 0.5) if delta_frames >= 0 else -int(-delta_frames + 0.5)
+        output = source.with_name(source.stem + '_voiceremoved.wav')
+        seen_files = set()
+        stop = threading.Event()
+        def observe_temporaries():
+            while not stop.wait(0.002):
+                for directory in self.root.glob('.voiceremoved-*'):
+                    try:
+                        seen_files.update(p.name for p in directory.iterdir())
+                    except FileNotFoundError:
+                        pass
+        observer = threading.Thread(target=observe_temporaries, daemon=True)
+        observer.start()
+        try:
+            result = run([BINARY, source, '--audio-only', *flags])
+        finally:
+            stop.set()
+            observer.join(timeout=5)
+        self.assertLessEqual(seen_files, {'output.wav'}, 'WAV must not create AAC or video intermediates')
+        self.assertNotIn('remux copied video', result.stderr)
+        self.assertIn('validate 24-bit PCM WAV', result.stderr)
+        self.assertEqual(result.stderr.count('AUSoundIsolation:'), 1 if '--passes' in flags else 2)
+        self.assertEqual(result.stdout.strip(), str(output))
+        self.assertFalse(self.output(source).exists(), 'audio-only must not create a video output')
+        self.assertEqual(content_hash(source), original)
+        self.assertEqual(source.stat().st_mtime_ns, original_mtime)
+        self.assert_clean()
+        after = probe(output)
+        self.assertEqual(after['format']['format_name'], 'wav')
+        self.assertEqual(len(after['streams']), 1)
+        stream = after['streams'][0]
+        self.assertEqual(stream['codec_name'], 'pcm_s24le')
+        self.assertEqual(stream['sample_rate'], '48000')
+        self.assertEqual(stream['bits_per_sample'], 24)
+        self.assertEqual(stream['channels'], channels)
+        self.assertEqual(float(stream.get('start_time', 0)), 0)
+        self.assertAlmostEqual(float(stream['duration']), expected / 48000, delta=0.000001)
+        from fractions import Fraction
+        self.assertEqual(Fraction(stream['duration_ts']) * Fraction(stream['time_base']) * 48000, expected)
+        # Independently count decoded frames with bounded buffers, not a full PCM array.
+        child = subprocess.Popen([FFMPEG, '-nostdin', '-v', 'error', '-i', str(output),
+                                  '-map', '0:a:0', '-c:a', 'pcm_s24le', '-f', 's24le', '-'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        byte_count = 0
+        leading_silence_bytes = max(0, min(expected, offset)) * channels * 3
+        try:
+            for chunk in iter(lambda: child.stdout.read(65536), b''):
+                if byte_count < leading_silence_bytes:
+                    self.assertFalse(any(chunk[:leading_silence_bytes - byte_count]))
+                byte_count += len(chunk)
+            self.assertEqual(child.wait(timeout=15), 0)
+            self.assertEqual(byte_count, expected * channels * 3)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
+            child.stdout.close()
+        return output
+
+    def test_audio_only_nonzero_video_start_mono_stereo_pad_trim_and_drain(self):
+        for channels in [1, 2]:
+            for audio_start, duration in [(1.5, 0.137), (0.5, 3.137), (4.0, 0.137)]:
+                with self.subTest(channels=channels, audio_start=audio_start):
+                    source = self.root / f'aligned-{channels}-{audio_start}.mov'
+                    expression = '0.08*sin(2*PI*220*t)' if channels == 1 else '0.08*sin(2*PI*220*t)|0.06*sin(2*PI*731*t)'
+                    run([FFMPEG, '-nostdin', '-v', 'error', '-copyts', '-itsoffset', '1.25',
+                         '-f', 'lavfi', '-i', 'testsrc2=size=128x72:rate=25:duration=2.04',
+                         '-itsoffset', audio_start, '-f', 'lavfi', '-i', f'aevalsrc={expression}:s=48000:d={duration}',
+                         '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-threads', '1',
+                         '-c:a', 'pcm_s16le', '-avoid_negative_ts', 'disabled', source])
+                    main = next(s for s in probe(source)['streams'] if s['codec_type'] == 'video')
+                    self.assertGreater(float(main['start_time']), 1)
+                    self.assertAlmostEqual(float(main['duration']), 2.04, delta=0.000001)
+                    self.assert_audio_only(source)
+
+    def test_audio_only_mp4_one_pass_and_no_overwrite(self):
+        source = self.fixture(channels=1, offset=1.25)
+        output = self.assert_audio_only(source, '--passes', '1')
+        original_output = content_hash(output)
+        result = run([BINARY, source, '--audio-only'], check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(content_hash(output), original_output)
+        self.assertNotIn('stream audio through', result.stderr)
+        output.unlink()
+        output.symlink_to(self.root / 'missing')
+        result = run([BINARY, source, '--audio-only'], check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(output.is_symlink())
+        self.assert_clean()
+
+    def test_audio_only_rejects_inapplicable_flags_before_input_access(self):
+        for flag in ['--verify', '--faststart']:
+            result = run([BINARY, self.root / 'missing.mp4', '--audio-only', flag], check=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('cannot be combined with --audio-only', result.stderr)
+            self.assertNotIn('probe', result.stderr)
+            self.assert_clean()
+
+    def test_audio_only_folder_and_same_stem_collision(self):
+        one = self.fixture(name='one.MP4')
+        two = self.fixture(name='two.mov', channels=1)
+        before = {p: content_hash(p) for p in [one, two]}
+        result = run([BINARY, self.root, '--audio-only', '--jobs', '2', '--passes', '1'])
+        self.assertCountEqual([Path(line).resolve() for line in result.stdout.splitlines()],
+                              [p.with_name(p.stem + '_voiceremoved.wav').resolve() for p in [one, two]])
+        for path, digest in before.items():
+            self.assertEqual(content_hash(path), digest)
+            self.assertFalse(self.output(path).exists())
+        self.assert_clean()
+        collision = self.root / 'one.mov'
+        shutil.copyfile(two, collision)
+        result = run([BINARY, self.root, '--audio-only'], check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('share a stem', result.stderr)
+        self.assertNotIn('probe', result.stderr)
+        self.assert_clean()
+
     def test_two_pass_distinct_stereo_audio_longer_than_video(self):
         source = self.fixture()
         output = self.assert_success(source, '--verify')

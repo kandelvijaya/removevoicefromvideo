@@ -2,6 +2,7 @@
 
 A compiled Swift command-line tool for **conversation suppression** on macOS.
 The tool leaves originals unchanged. It creates `<stem>_voiceremoved.<original extension>` beside each input.
+With `--audio-only`, it creates `<stem>_voiceremoved.wav` instead. Existing outputs remain unchanged.
 
 Suppression is not guaranteed removal. Speech can remain audible. Other sounds can change.
 This release does not target singing. Listen to the result before use.
@@ -30,14 +31,18 @@ Copy the compiled executable to a directory in `PATH` if needed. No helper execu
 "$BIN" /path/to/videos --jobs 2
 "$BIN" clip.mov --passes 1 --verify
 "$BIN" clip.MP4 --faststart
+"$BIN" clip.MP4 --audio-only
+# stdout: /absolute/path/clip_voiceremoved.wav
+"$BIN" /path/to/videos --audio-only --jobs 1
 ```
 
 | Option | Behavior |
 | --- | --- |
 | `--passes 1` | Use one isolation unit. Default: two distinct units in sequence. |
 | `--jobs N` | Limit folder concurrency to 1–8 jobs. Default: 2. |
-| `--verify` | Compare SHA-256 hashes of copied video and timecode packet payloads, including attached pictures. |
-| `--faststart` | Rewrite MP4/MOV/M4V headers for progressive playback. Default: off. |
+| `--audio-only` | Create aligned 48 kHz, 24-bit PCM WAV. Preserve mono/stereo channels. No AAC or video copy. |
+| `--verify` | Compare SHA-256 hashes of copied video and timecode packet payloads, including attached pictures. Not available with `--audio-only`. |
+| `--faststart` | Rewrite MP4/MOV/M4V headers for progressive playback. Default: off. Not available with `--audio-only`. |
 | `--help` | Show usage. |
 
 Give exactly one file or folder. Use `--` before a path that starts with `-`.
@@ -49,6 +54,38 @@ The tool **never overwrites** an output. There is no force option.
 Successful output paths go to stdout. Progress, dropped-stream reports, and errors go to stderr.
 Folder output order depends on completion order. Folder jobs continue after individual failures.
 The exit status is 0 for success, 1 for failures, and 130 for cancellation.
+
+## Audio-only WAV path
+
+`--audio-only` uses the same decoder and native isolation passes. The default remains two distinct passes.
+It streams corrected audio directly to a 48 kHz, 24-bit signed little-endian PCM WAV file.
+It preserves the source's mono or stereo channels. It creates no AAC intermediate and copies no video.
+Original videos and existing video outputs remain unchanged.
+
+WAV time zero corresponds to the first frame of the first non-attached video stream.
+The tool requires a finite main video start and a positive finite main video duration before model setup.
+It uses the main video stream duration, not the container duration or audio duration.
+It rounds duration and relative audio start independently to the nearest 48 kHz sample. Half-sample ties round away from zero.
+Audio that starts later receives leading silence. Audio before the video receives an initial trim.
+The tool pads or trims the end to exactly the target sample count. No audio coverage produces silence.
+All native passes still process and drain the complete decoded audio. Their frame counts remain separate from the aligned WAV count.
+Memory stays bounded. A short video target does not leave a blocked decoder or skip source validation.
+
+The tool finalizes a seekable temporary WAV before validation and atomic, no-replace publication.
+Validation always checks WAV format, 24-bit PCM, 48 kHz, channel count, zero start, duration, and exact sample count.
+FFprobe duration ticks establish the exact count. If ticks are unavailable, a bounded decode counts samples.
+WAV normally has no start timestamp field; an absent field represents zero.
+`--verify` checks copied video, so the CLI rejects it with `--audio-only`. It does not disable WAV validation.
+The CLI also rejects `--faststart` with `--audio-only`.
+
+The WAV path does not copy source metadata, chapters, cover art, subtitles, or timecode tracks.
+Video-remux metadata and container restrictions do not apply. Mono/stereo, one-audio-track, and unsupported-stream guards still apply.
+Folder processing remains nonrecursive. Same-stem inputs with different extensions would share one WAV destination and fail before processing.
+The output naming rule and no-overwrite policy still apply.
+
+FFmpeg automatically selects RF64 when the WAV exceeds the ordinary RIFF size limit, approximately 4 GiB.
+DaVinci Resolve interoperability with RF64 is **not verified**. Ordinary WAV interoperability also requires the user's editor check.
+This mode adds no Broadcast Wave Format metadata or timecode. Align WAV time zero with the video's first frame in the editor.
 
 ## Audio and video path
 
@@ -121,7 +158,8 @@ Apple's model allocates additional memory. Two concurrent jobs create four model
 Use `--jobs 1` if memory pressure is high. More jobs do not guarantee more throughput.
 No throughput or speech-removal rate is claimed before independent tests and measurement.
 
-Disk use includes the new video-sized output and the compressed AAC temporary file.
+The default path needs a new video-sized output and a compressed AAC temporary file.
+The WAV path needs only the new WAV, approximately 144,000 bytes per second per channel, plus its small header.
 The tool does not enable faststart by default because faststart adds disk work.
 A hidden, private `.voiceremoved-<UUID>` directory holds temporary files beside the final output.
 The final publication never replaces an existing file, including a symlink or a concurrent job's result.
@@ -139,8 +177,9 @@ The tool cannot undo a valid output that completed before cancellation.
 
 - Rejects no-audio inputs, multiple audio tracks, surround audio, and unknown stream types.
 - Requires a readable audio start timestamp. Output duration must be available from ffprobe or a Matroska duration tag.
-- Resamples every source to 48 kHz and re-encodes audio as AAC. Audio is not lossless.
-- AAC-compatible muxers are required. WebM usually rejects AAC. Some containers reject attached pictures or metadata.
+- The WAV path also requires valid main video timing. It does not support a user-selected time range.
+- Resamples every source to 48 kHz. The default path encodes AAC; `--audio-only` encodes 24-bit PCM. Native processing changes audio.
+- The default path requires AAC-compatible muxers. WebM usually rejects AAC. Some containers reject attached pictures or metadata.
 - Arbitrary timestamp discontinuities, changing channel layouts, and unusual edit lists need further validation.
 - The native model can change output across macOS versions. Native output is not byte-reproducible.
 - File permissions and extended attributes are not copied to the output. Originals remain unchanged.
@@ -160,6 +199,13 @@ swift build -c release
 BIN="$(swift build -c release --show-bin-path)/voice-remove"
 python3 Integration/run.py --binary "$BIN" -v
 ```
+
+Audio-only changes require a new independent review before formal tests run.
+The new deterministic tests cover alignment across partial blocks, positive/negative offsets, no audio coverage,
+fractional sample boundaries, per-pass drain accounting, WAV metadata mismatches, and incompatible flags.
+Native WAV fixtures cover mono/stereo, nonzero video starts, initial silence, start/end trims, end padding,
+exact decoded sample counts, folder collisions, no-overwrite behavior, and absence of AAC/video intermediates.
+These additions are not a claim that the new suites passed.
 
 Unit tests use a deterministic delay renderer. They cover initial latency discard, exact lengths, empty audio,
 partial byte reads, short blocks, independent stereo samples, and one-pass and two-pass pipelines.
@@ -188,7 +234,8 @@ The command fails if `inputVideo_voiceremoved.MP4` already exists. Archive that 
 ## Source layout
 
 - `Sources/VoiceRemovedCore/Isolation.swift`: native unit setup and fixed-size rendering.
-- `Sources/VoiceRemovedCore/PCM.swift`: bounded stream assembly and per-pass latency correction.
+- `Sources/VoiceRemovedCore/PCM.swift`: bounded stream assembly, per-pass latency correction, and video alignment.
+- `Sources/VoiceRemovedCore/AudioOnly.swift`: main video timing preflight and exact WAV validation.
 - `Sources/VoiceRemovedCore/Media.swift`: probing, remux arguments, timing and stream validation.
 - `Sources/VoiceRemovedCore/Metadata.swift`: user metadata validation.
 - `Sources/VoiceRemovedCore/Support.swift`: child lifetime, cancellation, tools, and atomic publication.
