@@ -31,13 +31,15 @@ public final class Pipeline {
             log("\(input.lastPathComponent): DROP unsupported data stream \(stream.index) (\(stream.codec_name ?? "unknown")); unmapped data payload will not appear in output")
         }
         let work = final.deletingLastPathComponent().appendingPathComponent(".voiceremoved-" + UUID().uuidString, isDirectory: true)
+        let encoded = work.appendingPathComponent("audio.m4a")
+        let temporary = work.appendingPathComponent("output." + input.pathExtension)
+        // Reject known container/metadata conflicts before model setup or audio work.
+        let remux = try remuxArguments(input: input, audio: encoded, temporary: temporary, media: media, faststart: options.faststart)
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer {
             do { try FileManager.default.removeItem(at: work) }
             catch { log("temporary cleanup failed for \(work.path): \(error)") }
         }
-        let encoded = work.appendingPathComponent("audio.m4a")
-        let temporary = work.appendingPathComponent("output." + input.pathExtension)
         log("\(input.lastPathComponent): stream audio through \(options.passes) isolation pass(es)")
         // Create and check all units before spawning the streaming child processes.
         let units = try (0..<options.passes).map { _ in try Isolation(channels: channels) }
@@ -86,7 +88,7 @@ public final class Pipeline {
             throw Failure("decoded audio duration differs from source by more than 100 ms")
         }
         log("\(input.lastPathComponent): remux copied video; audio \(frames) frames")
-        try tools.run(remuxArguments(input: input, audio: encoded, temporary: temporary, media: media, faststart: options.faststart), cancellation)
+        try tools.run(remux, cancellation)
         let output = try tools.probe(temporary, cancellation)
         try validateOutput(source: media, output: output, frameCount: frames)
         if options.verify {

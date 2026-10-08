@@ -27,6 +27,48 @@ final class MediaTests: XCTestCase {
         XCTAssertEqual(arguments[arguments.firstIndex(of: "-itsoffset")! + 1], "1.25")
         XCTAssertTrue(arguments.contains("attached_pic"))
         XCTAssertEqual(arguments[arguments.firstIndex(of: "-c:v")! + 1], "copy")
+        XCTAssertFalse(arguments.contains("-movflags"), "cover art must use the default iTunes metadata path")
+        XCTAssertTrue(arguments.contains("-map_metadata:g"))
+        XCTAssertTrue(arguments.contains("0:g"))
+        XCTAssertTrue(arguments.contains("-map_metadata:s:2"))
+        XCTAssertTrue(arguments.contains("0:s:3"))
+    }
+    func testCoverFaststartDoesNotSelectMDTA() throws {
+        for ext in ["MP4", "m4v"] {
+            let arguments = try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.\(ext)"),
+                                                       media: decode(fixture), faststart: true)
+            XCTAssertEqual(arguments, ["-movflags", "+faststart"])
+        }
+    }
+    func testCustomMetadataWithCoverFailsPreflight() throws {
+        let media = try decode(fixture.replacingOccurrences(of: "\"title\":\"Original title\"",
+                                                            with: "\"title\":\"Original title\",\"project_note\":\"Keep me\""))
+        XCTAssertThrowsError(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.mp4"), media: media, faststart: false)) { error in
+            XCTAssertTrue(String(describing: error).contains("project_note"))
+        }
+        // Preflight does not relax final metadata validation.
+        XCTAssertThrowsError(try validateTags(media.format?.tags, ["title": "Original title"], context: "file"))
+    }
+    func testMetadataWithoutCoverUsesMDTA() throws {
+        let media = try decode(fixture.replacingOccurrences(of: "\"attached_pic\":1", with: "\"attached_pic\":0")
+            .replacingOccurrences(of: "\"title\":\"Original title\"", with: "\"project_note\":\"Keep me\""))
+        for ext in ["mp4", "mov", "m4v"] {
+            XCTAssertEqual(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.\(ext)"), media: media, faststart: false),
+                           ["-movflags", "+use_metadata_tags"])
+            XCTAssertEqual(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.\(ext)"), media: media, faststart: true),
+                           ["-movflags", "+use_metadata_tags+faststart"])
+        }
+    }
+    func testMOVCoverAndNonMOVFaststartFailPreflight() throws {
+        let media = try decode(fixture)
+        XCTAssertThrowsError(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.mov"), media: media, faststart: false))
+        XCTAssertThrowsError(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.mkv"), media: media, faststart: true))
+        XCTAssertEqual(try remuxContainerArguments(input: URL(fileURLWithPath: "/clip.mkv"), media: media, faststart: false), [])
+    }
+    func testStandardCoverMetadataKeysAndBookkeepingPassPreflight() throws {
+        XCTAssertNoThrow(try validateCoverFileMetadata(["creation_time": "2026-10-04T09:55:11.000000Z",
+                                                       "title": "Keep me", "comment": "Keep me too", "encoder": "Camera"]))
+        XCTAssertThrowsError(try validateCoverFileMetadata(["com.apple.quicktime.make": "Camera"]))
     }
     func testUnsupportedTrackCountsAndChannelsFail() throws {
         XCTAssertThrowsError(try decode("{\"streams\":[]}").validateInput())

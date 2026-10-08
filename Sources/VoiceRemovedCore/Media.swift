@@ -69,26 +69,40 @@ extension Tools {
 
 func remuxArguments(input: URL, audio: URL, temporary: URL, media: Media, faststart: Bool) throws -> [String] {
     let sourceAudio = try media.validateInput()
+    let containerArguments = try remuxContainerArguments(input: input, media: media, faststart: faststart)
     // Processed AAC starts at zero. Restore the original audio timestamp, including negative starts.
     var args = ["-nostdin", "-hide_banner", "-v", "warning", "-n", "-copyts", "-i", input.path,
                 "-itsoffset", String(sourceAudio.start!), "-i", audio.path]
     for stream in media.retained {
         args += ["-map", stream.codec_type == "audio" ? "1:a:0" : "0:\(stream.index)"]
     }
-    args += ["-c", "copy", "-c:v", "copy", "-map_metadata", "0", "-map_chapters", "0", "-avoid_negative_ts", "disabled"]
+    args += ["-c", "copy", "-c:v", "copy", "-map_metadata:g", "0:g", "-map_chapters", "0", "-avoid_negative_ts", "disabled"]
     for (index, stream) in media.retained.enumerated() {
         args += ["-map_metadata:s:\(index)", "0:s:\(stream.index)"]
         let flags = (stream.disposition ?? [:]).filter { $0.value != 0 }.map(\.key).sorted().joined(separator: "+")
         args += ["-disposition:\(index)", flags.isEmpty ? "0" : flags]
     }
-    let isMOV = ["mp4", "mov", "m4v"].contains(input.pathExtension.lowercased())
-    if faststart && !isMOV { throw Failure("--faststart only supports MP4, MOV, and M4V") }
-    if isMOV {
-        // Keep custom file tags instead of only the MP4 muxer's short allow-list.
-        args += ["-movflags", faststart ? "+use_metadata_tags+faststart" : "+use_metadata_tags"]
-    }
+    args += containerArguments
     args.append(temporary.path)
     return args
+}
+
+/// Call before isolation or audio decoding, not just at final remux time.
+func remuxContainerArguments(input: URL, media: Media, faststart: Bool) throws -> [String] {
+    let ext = input.pathExtension.lowercased()
+    let isMOV = ["mp4", "mov", "m4v"].contains(ext)
+    if faststart && !isMOV { throw Failure("--faststart only supports MP4, MOV, and M4V") }
+    guard isMOV else { return [] }
+    let hasPicture = media.streams.contains { $0.disposition?["attached_pic"] == 1 }
+    if hasPicture {
+        // FFmpeg's MOV udta path writes neither covr nor iTunes metadata.
+        guard ext != "mov" else { throw Failure("attached pictures in MOV are unsupported by the FFmpeg MOV muxer") }
+        try validateCoverFileMetadata(media.format?.tags)
+        // use_metadata_tags selects mdta and bypasses covr. Keep the iTunes path.
+        return faststart ? ["-movflags", "+faststart"] : []
+    }
+    // No cover art: mdta can retain arbitrary file-level keys.
+    return ["-movflags", faststart ? "+use_metadata_tags+faststart" : "+use_metadata_tags"]
 }
 
 func validateOutput(source: Media, output: Media, frameCount: Int) throws {
