@@ -1,0 +1,15 @@
+inputVideo.MP4
+.build/
+.swiftpm/
+.DS_Store
+*.MP4
+*.mp4
+*.mov
+*.MOV
+*.m4v
+*.mkv
+*.m4a
+*.wav
+*.f32
+.voiceremoved-*/
+Integration/results/
