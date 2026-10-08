@@ -8,6 +8,12 @@ inputVideo.MP4
 *.MOV
 *.m4v
 *.mkv
+*.MKV
+*.avi
+*.AVI
+*.webm
+*.WEBM
+*_voiceremoved.*
 *.m4a
 *.wav
 *.f32
