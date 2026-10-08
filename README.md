@@ -89,9 +89,11 @@ The tool maps file metadata, rotation, chapters, stream language, and dispositio
 Validation rejects changed user metadata or unsupported metadata that the output container cannot retain.
 Container bookkeeping tags, such as encoder and brand tags, can change.
 Creation-time validation compares exact instants, including all fractional digits, rather than timestamp text.
-Only valid RFC 3339 timestamps receive this comparison. Different dates, invalid dates, and reduced fractional precision fail.
+Only valid RFC 3339 timestamps receive semantic comparison. Different instants and lost nonzero fractional precision fail.
 FFprobe can join MOV header and `mdta` creation times with `;`. Every value must describe the same instant.
-Conflicting or malformed values cannot receive semantic equivalence. All other user tags require exact values.
+Conflicting or malformed values cannot receive semantic equivalence.
+Exact text matches retain historical acceptance, including identical malformed timestamps. The semantic parser rejects malformed alternate representations.
+All other user tags require exact values.
 
 MP4/M4V cover art requires FFmpeg's standard iTunes metadata path, which writes the `covr` atom.
 The tool disables `use_metadata_tags` when an attached picture exists. `--faststart` remains available.
