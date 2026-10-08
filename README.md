@@ -53,6 +53,7 @@ The exit status is 0 for success, 1 for failures, and 130 for cancellation.
 ## Audio and video path
 
 1. Parse ffprobe JSON. Require one mono or stereo audio track and a main video stream.
+   Reject known metadata conflicts and incompatible `--faststart` requests before audio processing.
 2. Decode the audio through FFmpeg into bounded Float32 buffers at 48 kHz.
 3. Process two distinct Apple `vois` units in memory. Use non-interleaved Float32 inside each unit.
 4. Set HQ conversation mode to 0. Set wet/dry to **-100**, which selects the background output on the validated runtime.
@@ -70,9 +71,20 @@ The tool retains stereo channels. It does not assume dual-mono content or fall b
 The tool preserves all video streams, including attached pictures, when the container supports them.
 It copies subtitle streams when the container supports them. Unsupported combinations fail without publication.
 The tool reports and drops data streams, such as camera telemetry. The muxer can recreate a chapter data track.
-The tool preserves file metadata, rotation, chapters, stream language, and dispositions through explicit FFmpeg maps.
+The tool maps file metadata, rotation, chapters, stream language, and dispositions explicitly.
 Validation rejects changed user metadata or unsupported metadata that the output container cannot retain.
 Container bookkeeping tags, such as encoder and brand tags, can change.
+
+MP4/M4V cover art requires FFmpeg's standard iTunes metadata path, which writes the `covr` atom.
+The tool disables `use_metadata_tags` when an attached picture exists. `--faststart` remains available.
+Standard file tags include title, comment, artist, album, copyright, and creation time.
+Unknown file tags with cover art fail preflight. Recognized tags must still pass exact value validation after remux.
+Without cover art, MP4/MOV/M4V use `use_metadata_tags` (`mdta`) to retain custom file tags.
+This flag does not add support for arbitrary stream or chapter tags.
+MOV inputs with attached pictures fail preflight: FFmpeg's native MOV metadata path does not write `covr`.
+The tool does not silently replace the MOV container with MP4.
+This policy follows [FFmpeg 9.0.2 movenc.c](https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/libavformat/movenc.c),
+including `mov_write_meta_tag`, `mov_write_ilst_tag`, and `mov_write_udta_tag`.
 
 Validation checks stream structure, AAC format, timing, rotation, user metadata, chapters, language, and dispositions.
 The timing tolerance is 50 ms for AAC packet rounding and container precision.
@@ -133,7 +145,9 @@ partial byte reads, short blocks, independent stereo samples, and one-pass and t
 They also cover metadata, mapping, collisions, folder selection, stderr backpressure, and child cancellation.
 Native integration tests generate small FFmpeg fixtures in a temporary folder.
 They cover mono, distinct stereo, timing offsets, longer audio, MOV, rotation, chapters, custom metadata,
-attached pictures, folder concurrency, unsupported tracks, no-overwrite behavior, and SIGINT/SIGTERM cleanup.
+attached pictures, folder concurrency, unsupported tracks, no-overwrite behavior, and SIGINT/SIGTERM cleanup with exit status 130.
+The cover fixture asserts exactly one attached picture and a 90-degree rotation before it invokes the tool.
+Custom file metadata uses a separate fixture without cover art. A negative fixture checks early `--faststart` rejection.
 Integration tests need FFmpeg's `libx264` encoder. They do not touch `inputVideo.MP4`.
 
 After the synthetic suites pass, measure the real video separately:

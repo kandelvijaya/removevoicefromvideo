@@ -130,24 +130,58 @@ class NativeIntegration(unittest.TestCase):
     def test_mov_extension(self):
         self.assert_success(self.fixture(name='clip.MOV'), '--verify')
 
-    def test_rotation_chapters_custom_metadata_and_attached_picture(self):
+    def test_rotation_chapters_and_attached_picture(self):
         source = self.fixture(name='base.MP4')
         chapter = self.root / 'chapters.txt'
-        chapter.write_text(';FFMETADATA1\nproject_note=Keep custom metadata\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1900\ntitle=Chapter one\n')
+        chapter.write_text(';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1900\ntitle=Chapter one\n')
         picture = self.root / 'cover.jpg'
         run([FFMPEG, '-v', 'error', '-f', 'lavfi', '-i', 'color=blue:size=64x64', '-frames:v', '1', '-threads', '1', '-update', '1', picture])
         decorated = self.root / 'decorated.MP4'
-        run([FFMPEG, '-v', 'error', '-i', source, '-i', picture, '-f', 'ffmetadata', '-i', chapter,
-             '-map', '0:v:0', '-map', '0:a:0', '-map', '1:v', '-c', 'copy', '-map_metadata', '0',
-             '-metadata', 'project_note=Keep custom metadata', '-map_chapters', '2', '-metadata:s:v:0', 'rotate=90',
-             '-disposition:v:1', 'attached_pic', '-movflags', '+use_metadata_tags', decorated])
-        output = self.assert_success(decorated, '--verify')
-        before, after = probe(decorated), probe(output)
-        self.assertEqual(before['chapters'], after['chapters'])
-        self.assertEqual(after['format']['tags']['project_note'], 'Keep custom metadata')
+        # mdta/use_metadata_tags bypasses covr. Use standard metadata for genuine cover art.
+        run([FFMPEG, '-v', 'error', '-display_rotation:v:0', '90', '-i', source, '-i', picture,
+             '-f', 'ffmetadata', '-i', chapter, '-map', '0:v:0', '-map', '0:a:0', '-map', '1:v',
+             '-c', 'copy', '-map_metadata', '0', '-map_chapters', '2',
+             '-disposition:v:1', 'attached_pic', decorated])
+        before = probe(decorated)
+        covers = [s for s in before['streams'] if s.get('disposition', {}).get('attached_pic') == 1]
+        self.assertEqual(len(covers), 1, 'fixture must contain exactly one real attached picture')
+        self.assertEqual(covers[0]['codec_name'], 'mjpeg')
+        self.assertEqual(len(before['chapters']), 1)
+        self.assertEqual(before['chapters'][0]['tags']['title'], 'Chapter one')
         before_main = next(s for s in before['streams'] if s['codec_type'] == 'video' and not s['disposition']['attached_pic'])
+        rotations = [s['rotation'] for s in before_main.get('side_data_list', []) if 'rotation' in s]
+        self.assertEqual(rotations, [90], 'fixture must contain the intended display rotation')
+        output = self.assert_success(decorated, '--verify', '--faststart')
+        after = probe(output)
+        result_covers = [s for s in after['streams'] if s.get('disposition', {}).get('attached_pic') == 1]
+        self.assertEqual(len(result_covers), 1)
+        self.assertEqual(covers[0]['disposition'], result_covers[0]['disposition'])
+        self.assertEqual(video_hash(decorated, covers[0]['index']), video_hash(output, result_covers[0]['index']))
+        self.assertEqual(before['chapters'], after['chapters'])
+        self.assertEqual(before['format']['tags']['comment'], after['format']['tags']['comment'])
         after_main = next(s for s in after['streams'] if s['codec_type'] == 'video' and not s['disposition']['attached_pic'])
         self.assertEqual(before_main.get('side_data_list'), after_main.get('side_data_list'))
+
+    def test_custom_file_metadata_without_attached_picture(self):
+        source = self.fixture(name='base.MP4')
+        decorated = self.root / 'custom.MP4'
+        run([FFMPEG, '-v', 'error', '-i', source, '-map', '0', '-c', 'copy', '-map_metadata', '0',
+             '-metadata', 'project_note=Keep custom metadata', '-movflags', '+use_metadata_tags', decorated])
+        before = probe(decorated)
+        self.assertEqual(before['format']['tags']['project_note'], 'Keep custom metadata')
+        self.assertFalse(any(s.get('disposition', {}).get('attached_pic') for s in before['streams']))
+        output = self.assert_success(decorated, '--verify')
+        self.assertEqual(probe(output)['format']['tags']['project_note'], 'Keep custom metadata')
+
+    def test_faststart_rejected_before_audio_processing(self):
+        source = self.fixture(name='clip.mkv')
+        result = run([BINARY, source, '--faststart'], check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('--faststart only supports MP4, MOV, and M4V', result.stderr)
+        self.assertNotIn('stream audio through', result.stderr)
+        self.assertNotIn('AUSoundIsolation:', result.stderr)
+        self.assertFalse(self.output(source).exists())
+        self.assert_clean()
 
     def test_no_overwrite_and_dangling_symlink_collision(self):
         source = self.fixture()
@@ -227,7 +261,7 @@ class NativeIntegration(unittest.TestCase):
             process.wait(timeout=15)
             reader.join(timeout=5)
             stdout = process.stdout.read()
-            self.assertNotEqual(process.returncode, 0)
+            self.assertEqual(process.returncode, 130)
             self.assertEqual(stdout, '')
             self.assertFalse(self.output(source).exists())
             self.assert_clean()
