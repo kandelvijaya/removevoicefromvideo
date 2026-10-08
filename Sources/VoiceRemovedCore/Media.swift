@@ -12,6 +12,8 @@ struct Media: Decodable {
         let sample_rate: String?
         let start_time: String?
         let duration: String?
+        let duration_ts: Int64?
+        let bits_per_sample: Int?
         let width: Int?
         let height: Int?
         let tags: [String: String]?
@@ -47,12 +49,16 @@ struct Media: Decodable {
         let end_time: String
         let tags: [String: String]?
     }
-    struct Format: Decodable { let tags: [String: String]? }
+    struct Format: Decodable {
+        let tags: [String: String]?
+        let format_name: String?
+    }
     let streams: [Stream]
     let chapters: [Chapter]?
     let format: Format?
 
     var audio: [Stream] { streams.filter { $0.codec_type == "audio" } }
+    var mainVideo: Stream? { streams.first { $0.codec_type == "video" && $0.disposition?["attached_pic"] != 1 } }
     var retained: [Stream] { streams.filter { ["video", "audio", "subtitle"].contains($0.codec_type ?? "") || $0.isTimecode } }
     func validateInput() throws -> Stream {
         guard audio.count == 1 else { throw Failure("expected one audio track, found \(audio.count); no-audio and multi-audio inputs are unsupported") }

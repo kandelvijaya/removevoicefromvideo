@@ -35,6 +35,66 @@ final class PipePCM: PCMSource {
     }
 }
 
+/// Aligns corrected audio to a video interval without changing per-pass frame accounting.
+/// The final next() drains all upstream frames, even if the target ended before audio.
+final class AlignedPCM: PCMSource {
+    private let source: PCMSource
+    private let channels: Int
+    private let targetFrames: Int
+    private let cancellation: Cancellation
+    private var silenceFrames: Int
+    private var skipFrames: Int
+    private var carry = Data()
+    private var eof = false
+    private(set) var inputFrames = 0
+    private(set) var outputFrames = 0
+
+    init(source: PCMSource, channels: Int, targetFrames: Int, offsetFrames: Int, cancellation: Cancellation) {
+        self.source = source; self.channels = channels; self.targetFrames = targetFrames
+        self.cancellation = cancellation
+        silenceFrames = min(targetFrames, max(0, offsetFrames))
+        skipFrames = max(0, -offsetFrames)
+    }
+
+    private func read() throws -> Data? {
+        try cancellation.check()
+        guard let data = try source.next() else { eof = true; return nil }
+        guard !data.isEmpty, data.count <= blockFrames * channels * 4, data.count % (channels * 4) == 0 else {
+            throw Failure("invalid upstream PCM alignment block")
+        }
+        inputFrames += data.count / (channels * 4)
+        return data
+    }
+
+    func next() throws -> Data? {
+        try cancellation.check()
+        if outputFrames == targetFrames {
+            carry.removeAll(keepingCapacity: false)
+            while !eof { _ = try read() }
+            return nil
+        }
+        let stride = channels * 4
+        let capacity = min(blockFrames, targetFrames - outputFrames) * stride
+        var result = Data()
+        let silence = min(silenceFrames, capacity / stride)
+        result.append(Data(count: silence * stride))
+        silenceFrames -= silence
+        while result.count < capacity {
+            if carry.isEmpty && !eof { carry = try read() ?? Data() }
+            if !carry.isEmpty {
+                let skip = min(skipFrames, carry.count / stride)
+                carry.removeFirst(skip * stride); skipFrames -= skip
+                let take = min(capacity - result.count, carry.count)
+                result.append(carry.prefix(take)); carry.removeFirst(take)
+            } else if eof {
+                result.append(Data(count: capacity - result.count))
+            }
+        }
+        outputFrames += result.count / stride
+        return result
+    }
+}
+
 /// Discards INITIAL latency, then emits exactly the number of source frames.
 /// Each pass owns its own length accounting and zero-padded tail flush.
 final class LatencyStream: PCMSource {

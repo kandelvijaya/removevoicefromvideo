@@ -3,15 +3,18 @@ import VoiceRemovedCore
 import Darwin
 
 let usage = """
-Usage: voice-remove <video-or-folder> [--passes 1|2] [--jobs 1..8] [--faststart] [--verify]
+Usage: voice-remove <video-or-folder> [--passes 1|2] [--jobs 1..8] [--audio-only] [--faststart] [--verify]
 
 Suppress conversation with Apple AUSoundIsolation. Requires macOS 15 or later.
 Output: <stem>_voiceremoved.<original extension>, beside the input. Never overwrites.
+--audio-only creates <stem>_voiceremoved.wav: 48 kHz, 24-bit PCM, original mono/stereo channels.
+WAV time zero matches the first main video frame. WAV duration matches the main video, with silence or trims.
 Folders are nonrecursive. Default: two passes, two concurrent folder jobs.
 --passes 1   Use one isolation unit instead of two.
 --jobs N     Limit concurrent folder jobs (default 2, maximum 8).
---faststart  Rewrite MP4/MOV/M4V headers for progressive playback; extra disk work.
---verify     Compare SHA-256 hashes of copied video and timecode streams (extra full reads).
+--audio-only Output aligned WAV without AAC or video copying. WAV validation always runs.
+--faststart  Rewrite MP4/MOV/M4V headers for progressive playback; incompatible with --audio-only.
+--verify     Compare SHA-256 hashes of copied video and timecode streams; incompatible with --audio-only.
 --help       Show this help.
 Successful output paths go to stdout. Progress and errors go to stderr.
 """
@@ -36,6 +39,7 @@ func parse(_ arguments: [String]) throws -> (URL, Options) {
             }
         } else if !positional && arg == "--faststart" { options.faststart = true }
         else if !positional && arg == "--verify" { options.verify = true }
+        else if !positional && arg == "--audio-only" { options.audioOnly = true }
         else {
             guard positional || !arg.hasPrefix("-") else { throw Failure("unknown option: \(arg)") }
             guard path == nil else { throw Failure("give exactly one video or folder") }
@@ -44,6 +48,7 @@ func parse(_ arguments: [String]) throws -> (URL, Options) {
         index += 1
     }
     guard let path = path else { throw Failure("give one video or folder; use --help") }
+    try options.validate()
     return (URL(fileURLWithPath: path).standardizedFileURL, options)
 }
 
@@ -58,6 +63,12 @@ do {
     guard #available(macOS 15, *) else { throw Failure("macOS 15 or later is required for HQ conversation suppression") }
     let (location, options) = try parse(arguments)
     let videos = try inputs(at: location)
+    if options.audioOnly {
+        let destinations = videos.map { outputURL(for: $0, audioOnly: true).path }
+        guard Set(destinations).count == destinations.count else {
+            throw Failure("folder inputs share a stem and would create the same WAV output; process those inputs separately")
+        }
+    }
     let pipeline = try Pipeline(cancellation: cancellation)
     let queue = OperationQueue()
     queue.maxConcurrentOperationCount = options.jobs

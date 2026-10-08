@@ -158,9 +158,9 @@ struct Tools {
     }
 }
 
-public func outputURL(for input: URL) -> URL {
+public func outputURL(for input: URL, audioOnly: Bool = false) -> URL {
     let stem = input.deletingPathExtension().lastPathComponent
-    let ext = input.pathExtension
+    let ext = audioOnly ? "wav" : input.pathExtension
     return input.deletingLastPathComponent().appendingPathComponent(stem + "_voiceremoved" + (ext.isEmpty ? "" : "." + ext))
 }
 
