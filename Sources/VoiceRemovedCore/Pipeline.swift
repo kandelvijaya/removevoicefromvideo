@@ -62,7 +62,14 @@ public final class Pipeline {
         var nextProgress = sampleRate * 30
         while let data = try source.next() {
             try cancellation.check()
-            try encoder.input!.write(contentsOf: data)
+            do { try encoder.input!.write(contentsOf: data) }
+            catch {
+                // Broken pipes usually mean an encoder error. Drain and report that error.
+                try? encoder.input!.close()
+                decoder.abort()
+                do { try encoder.finish() } catch let processError { throw processError }
+                throw Failure("AAC input pipe write failed: \(error)")
+            }
             frames += data.count / (channels * 4)
             if frames >= nextProgress {
                 log("\(input.lastPathComponent): processed \(frames / sampleRate) seconds of audio")
@@ -90,8 +97,7 @@ public final class Pipeline {
                 guard before == after else { throw Failure("video packet hash mismatch for stream \(original.index)") }
             }
         }
-        try cancellation.check()
-        try publish(temporary, to: final)
+        try cancellation.whileActive { try publish(temporary, to: final) }
         log("\(input.lastPathComponent): complete")
         return final
     }

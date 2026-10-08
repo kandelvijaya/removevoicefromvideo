@@ -19,6 +19,12 @@ public final class Cancellation {
     public init() {}
     public var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
     public func check() throws { if isCancelled { throw Failure("cancelled") } }
+    /// Only use this for short operations. Publication and cancellation share one boundary.
+    func whileActive(_ action: () throws -> Void) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped else { throw Failure("cancelled") }
+        try action()
+    }
     public func installSignals() {
         signal(SIGPIPE, SIG_IGN)
         for number in [SIGINT, SIGTERM] {
